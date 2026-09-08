@@ -1,0 +1,666 @@
+{
+  "name": "Agente estratégico V9.2 - Magneto y elempleo.com (conexiones corregidas)",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "f8a41f01-573d-416b-a833-1500c90752df",
+      "name": "Ejecutar V9.2 multifuente"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://agente:3000/scrape",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{$json.url}}\",\n  \"instruction\": \"{{$json.instruction}}\",\n  \"id_consulta\": \"{{$json.id_consulta}}\",\n  \"area_estrategica\": \"{{$json.area_estrategica}}\",\n  \"subarea\": \"{{$json.subarea}}\",\n  \"pagina\": \"{{$json.pagina}}\"\n}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 60000
+            }
+          },
+          "timeout": 2700000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        500,
+        0
+      ],
+      "id": "f722749b-5557-471c-bea4-8a64511b3939",
+      "name": "Consultar Magneto",
+      "retryOnFail": false,
+      "onError": "continueRegularOutput",
+      "notesInFlow": true,
+      "notes": "Procesamiento controlado: una solicitud por lote. El servidor aplica hasta tres intentos ante DNS o tiempos de espera transitorios."
+    },
+    {
+      "parameters": {
+        "jsCode": "const entradas = $input.all();\nconst consultas = $(\"Generar consultas Magneto\").all();\nconst fechaExtraccion = new Date().toISOString();\nconst vacantesUnicas = new Map();\n\nfunction texto(valor) {\n  return String(valor ?? \"\").trim();\n}\n\nfunction normalizar(valor) {\n  return texto(valor)\n    .toLowerCase()\n    .normalize(\"NFD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n}\n\nfunction obtenerDetalleModalidad(entrada, indiceTarjeta, cargo) {\n  const detalles = entrada.result?.vacancy_details || [];\n  const detalleIndice = detalles[indiceTarjeta];\n  if (detalleIndice && normalizar(detalleIndice.title) === normalizar(cargo)) return detalleIndice;\n  return detalles.find(detalle => normalizar(detalle.title) === normalizar(cargo)) || {\n    url: \"\",\n    modalidad_trabajo: \"No disponible\",\n    modalidad_texto_original: \"\",\n    estado_modalidad: \"Detalle no localizado\"\n  };\n}\n\nfunction combinarValores(valorActual, valorNuevo) {\n  const valores = new Set(texto(valorActual).split(\" | \").filter(Boolean));\n  if (valorNuevo !== undefined && valorNuevo !== null && valorNuevo !== \"\") {\n    valores.add(String(valorNuevo));\n  }\n  return [...valores].join(\" | \");\n}\n\nfunction clasificarNivel(cargo, contrato) {\n  const valor = normalizar(`${cargo} ${contrato}`);\n  if (/practic|aprendiz|contrato de aprendizaje|estudiante en practica/.test(valor)) return \"Práctica o aprendizaje\";\n  if (/director|gerente|vicepresidente|decano|rector/.test(valor)) return \"Directivo\";\n  if (/coordinador|jefe|lider|especialista|consultor senior/.test(valor)) return \"Coordinación o especialista\";\n  if (/auxiliar|operario|operador|bodeguero|oficios varios|conductor/.test(valor)) return \"Auxiliar u operativo\";\n  if (/tecnico|tecnologo/.test(valor)) return \"Técnico o tecnólogo\";\n  if (/profesional|ingenier|agronom|cientific|abogad|psicolog|medic|enfermer|analista|docente|profesor|investigador|desarrollador|comunicador|trabajador social/.test(valor)) return \"Profesional\";\n  return \"No determinado\";\n}\n\nfunction clasificarAreaRegional(cargo) {\n  const valor = normalizar(cargo);\n  const reglas = [\n    [\"AE10\", \"Seguridad y salud en el trabajo\", /\\bsst\\b|seguridad y salud/],\n    [\"AE03\", \"Inteligencia artificial, datos y ciberseguridad\", /inteligencia artificial|analitica|analista de datos|ciberseguridad|business intelligence|cientifico de datos/],\n    [\"AE02\", \"Tecnologías digitales y software\", /software|desarrollador|programador|sistemas|devops|cloud|soporte ti/],\n    [\"AE11\", \"Ambiente, sostenibilidad y cambio climático\", /ambiental|sostenibilidad|forestal|cambio climatico/],\n    [\"AE12\", \"Bioeconomía, agroindustria y desarrollo rural\", /agronom|agro|agricol|pecuario|rural/],\n    [\"AE13\", \"Ciencias básicas e investigación\", /investigacion|cientific|laboratorio|biolog|quimic|fisic/],\n    [\"AE01\", \"Educación y pedagogía\", /docente|profesor|educacion|pedagog|academico/],\n    [\"AE05\", \"Infraestructura, construcción y territorio\", /ingenieria civil|ingeniero civil|arquitect|construccion|obra/],\n    [\"AE04\", \"Ingeniería, automatización e industria\", /ingenier|automatizacion|produccion|mantenimiento|manufactura/],\n    [\"AE09\", \"Salud, psicología y bienestar\", /medic|enfermer|psicolog|fisioter|terapeuta|salud|farmac/],\n    [\"AE08\", \"Derecho, gobierno y políticas públicas\", /abogad|juridic|legal|derecho/],\n    [\"AE14\", \"Desarrollo social y comunitario\", /trabajo social|gestor social|comunitari/],\n    [\"AE15\", \"Comunicación, diseño e industrias creativas\", /comunic|disen|audiovisual|periodis|publicista/],\n    [\"AE16\", \"Logística, transporte y cadena de suministro\", /logistic|bodega|transporte|conductor|inventario/],\n    [\"AE17\", \"Turismo, cultura y servicios\", /turismo|hotel|viaje|gastronom|cultura/],\n    [\"AE18\", \"Gestión de proyectos, calidad e innovación\", /proyecto|calidad|innovacion|transformacion/],\n    [\"AE06\", \"Administración, finanzas y economía\", /financier|contab|tesorer|administrativ|econom|cartera/],\n    [\"AE07\", \"Mercadeo, ventas y emprendimiento\", /marketing|mercadeo|comercial|ventas|vendedor|asesor/],\n  ];\n  for (const [codigo, area, patron] of reglas) {\n    if (patron.test(valor)) return { codigo, area };\n  }\n  return { codigo: \"OTR\", area: \"Otros perfiles regionales\" };\n}\n\nfunction extraerSalario(salario) {\n  const numeros = texto(salario).match(/\\d[\\d. ]*/g) || [];\n  const valores = numeros\n    .map(numero => Number(numero.replace(/[. ]/g, \"\")))\n    .filter(numero => Number.isFinite(numero));\n  if (valores.length === 0) return { minimo: null, maximo: null };\n  return { minimo: valores[0], maximo: valores[1] ?? valores[0] };\n}\n\nfunction extraerCupos(contenido) {\n  const coincidencia = contenido.match(/([\\d.,]+)\\s+cupos/i);\n  if (!coincidencia) return \"\";\n  return coincidencia[1].replace(/[.,]/g, \"\");\n}\n\nconst camposCombinables = [\n  \"id_consulta\", \"area_codigo\", \"area_estrategica\", \"area_origen\",\n  \"subarea\", \"palabra_clave\", \"prioridad\", \"alcance_geografico\",\n  \"pagina_origen\", \"url_fuente\", \"url_vacante\", \"nivel_ocupacional\", \"cupos_consulta\"\n];\n\nfor (let numeroEntrada = 0; numeroEntrada < entradas.length; numeroEntrada++) {\n  const entrada = entradas[numeroEntrada].json;\n  const consulta = consultas[numeroEntrada]?.json || {};\n  const contenido = entrada.result?.content;\n  if (!contenido) continue;\n\n  const lineas = contenido.split(/\\r?\\n/).map(linea => linea.trim()).filter(Boolean);\n  let dentroDeOfertas = false;\n  let indiceTarjeta = 0;\n\n  for (let i = 0; i < lineas.length; i++) {\n    const linea = lineas[i];\n    if (/^#\\s+(Ofertas de (empleo|trabajo)|Trabajos en)/i.test(linea)) {\n      dentroDeOfertas = true;\n      continue;\n    }\n    if (!dentroDeOfertas) continue;\n    if (/^-\\s*1$/.test(linea)) break;\n\n    if (linea.startsWith(\"## \") && !linea.startsWith(\"### \") && lineas[i + 1]?.startsWith(\"### \")) {\n      const cargo = linea.replace(/^##\\s*/, \"\").trim();\n      const datosEmpresa = lineas[i + 1].replace(/^###\\s*/, \"\").trim();\n      const separacion = datosEmpresa.lastIndexOf(\"|\");\n      const empresa = separacion >= 0 ? datosEmpresa.slice(0, separacion).trim() : datosEmpresa;\n      const contrato = separacion >= 0 ? datosEmpresa.slice(separacion + 1).trim() : \"\";\n      const salario = (lineas[i + 2] || \"\").replace(/,$/, \"\").trim();\n      const ubicacion = lineas[i + 3] || \"\";\n      const urgente = lineas[i + 4]?.toLowerCase() === \"requerido con urgencia\";\n      const detalleModalidad = obtenerDetalleModalidad(entrada, indiceTarjeta, cargo);\n      indiceTarjeta += 1;\n      const regional = consulta.area_codigo === \"REG\";\n      const clasificacion = regional\n        ? clasificarAreaRegional(cargo)\n        : { codigo: consulta.area_codigo || \"\", area: consulta.area_estrategica || \"Sin clasificar\" };\n      const salarioNumerico = extraerSalario(salario);\n\n      const vacante = {\n        fecha_extraccion: fechaExtraccion,\n        estado_consulta: \"Exitosa con vacantes\",\n        id_consulta: consulta.id_consulta || \"\",\n        area_codigo: clasificacion.codigo,\n        area_estrategica: clasificacion.area,\n        area_origen: consulta.area_estrategica || \"\",\n        subarea: consulta.subarea || \"\",\n        palabra_clave: consulta.palabra_clave || \"\",\n        prioridad: consulta.prioridad || \"\",\n        alcance_geografico: consulta.alcance_geografico || \"Nacional\",\n        pagina_origen: String(consulta.pagina || 1),\n        fuente_portal: consulta.fuente_portal || \"Magneto\",\n        url_fuente: entrada.url || consulta.url || \"\",\n        url_vacante: detalleModalidad.url || \"\",\n        cupos_consulta: extraerCupos(contenido),\n        cargo,\n        nivel_ocupacional: clasificarNivel(cargo, contrato),\n        empresa,\n        contrato,\n        modalidad_trabajo: detalleModalidad.modalidad_trabajo || \"No disponible\",\n        modalidad_texto_original: detalleModalidad.modalidad_texto_original || \"\",\n        estado_modalidad: detalleModalidad.estado_modalidad || \"Detalle no localizado\",\n        salario,\n        salario_minimo: salarioNumerico.minimo,\n        salario_maximo: salarioNumerico.maximo,\n        ubicacion,\n        es_ibague_tolima: /ibagu[eé]|tolima/i.test(ubicacion) || regional,\n        urgente\n      };\n\n      const clave = [normalizar(cargo), normalizar(empresa), normalizar(ubicacion)].join(\"|\");\n      if (vacantesUnicas.has(clave)) {\n        const existente = vacantesUnicas.get(clave);\n        for (const campo of camposCombinables) {\n          existente[campo] = combinarValores(existente[campo], vacante[campo]);\n        }\n        if (existente.estado_modalidad !== \"Publicada\" && vacante.estado_modalidad === \"Publicada\") {\n          existente.modalidad_trabajo = vacante.modalidad_trabajo;\n          existente.modalidad_texto_original = vacante.modalidad_texto_original;\n          existente.estado_modalidad = vacante.estado_modalidad;\n          existente.url_vacante = vacante.url_vacante || existente.url_vacante;\n        }\n        existente.es_ibague_tolima = existente.es_ibague_tolima || vacante.es_ibague_tolima;\n        existente.urgente = existente.urgente || urgente;\n      } else {\n        vacantesUnicas.set(clave, vacante);\n      }\n    }\n  }\n}\n\nconst vacantes = [...vacantesUnicas.values()];\nif (vacantes.length === 0) throw new Error(\"No se identificaron vacantes en las respuestas recibidas\");\nreturn vacantes.map(vacante => ({ json: vacante }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        -180
+      ],
+      "id": "a164cb2f-e264-4181-a8ef-ea3b72017434",
+      "name": "Procesar vacantes Magneto"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "vacantes_estrategicas.xlsx",
+          "headerRow": true,
+          "sheetName": "Vacantes"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        3360,
+        -220
+      ],
+      "id": "fd13301c-c981-445b-95b5-4c745a62e189",
+      "name": "Convertir vacantes a Excel"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/files/vacantes_estrategicas.xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        3620,
+        -320
+      ],
+      "id": "08051c04-4107-4114-b306-b2519fe91196",
+      "name": "Guardar Excel maestro"
+    },
+    {
+      "parameters": {
+        "jsCode": "const catalogo = [\n  {\n    \"id_consulta\": \"Q001\",\n    \"area_codigo\": \"AE01\",\n    \"area_estrategica\": \"Educación y pedagogía\",\n    \"subarea\": \"Docencia universitaria\",\n    \"palabra_clave\": \"Profesor universitario\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-profesor-universidad\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q005\",\n    \"area_codigo\": \"AE02\",\n    \"area_estrategica\": \"Tecnologías digitales y software\",\n    \"subarea\": \"Desarrollo de software\",\n    \"palabra_clave\": \"Desarrollador de software\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-desarrollador-software\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q009\",\n    \"area_codigo\": \"AE03\",\n    \"area_estrategica\": \"Inteligencia artificial, datos y ciberseguridad\",\n    \"subarea\": \"Analítica de datos\",\n    \"palabra_clave\": \"Analista de datos\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-analista-datos\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q010\",\n    \"area_codigo\": \"AE03\",\n    \"area_estrategica\": \"Inteligencia artificial, datos y ciberseguridad\",\n    \"subarea\": \"Inteligencia artificial\",\n    \"palabra_clave\": \"Inteligencia artificial\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/inteligencia-artificial\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q011\",\n    \"area_codigo\": \"AE03\",\n    \"area_estrategica\": \"Inteligencia artificial, datos y ciberseguridad\",\n    \"subarea\": \"Ciberseguridad\",\n    \"palabra_clave\": \"Ciberseguridad\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/ciberseguridad\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q013\",\n    \"area_codigo\": \"AE04\",\n    \"area_estrategica\": \"Ingeniería, automatización e industria\",\n    \"subarea\": \"Ingeniería industrial\",\n    \"palabra_clave\": \"Ingeniero industrial\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-ingeniero-industrial\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q017\",\n    \"area_codigo\": \"AE05\",\n    \"area_estrategica\": \"Infraestructura, construcción y territorio\",\n    \"subarea\": \"Ingeniería civil\",\n    \"palabra_clave\": \"Ingeniero civil\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/ingeniero-civil\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q021\",\n    \"area_codigo\": \"AE06\",\n    \"area_estrategica\": \"Administración, finanzas y economía\",\n    \"subarea\": \"Finanzas\",\n    \"palabra_clave\": \"Analista financiero\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/analista-financiero\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q025\",\n    \"area_codigo\": \"AE07\",\n    \"area_estrategica\": \"Mercadeo, ventas y emprendimiento\",\n    \"subarea\": \"Mercadeo digital\",\n    \"palabra_clave\": \"Marketing digital\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/marketing-digital\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q029\",\n    \"area_codigo\": \"AE08\",\n    \"area_estrategica\": \"Derecho, gobierno y políticas públicas\",\n    \"subarea\": \"Servicios jurídicos\",\n    \"palabra_clave\": \"Abogado\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/abogado\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q033\",\n    \"area_codigo\": \"AE09\",\n    \"area_estrategica\": \"Salud, psicología y bienestar\",\n    \"subarea\": \"Psicología\",\n    \"palabra_clave\": \"Psicólogo\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/psicologo\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q037\",\n    \"area_codigo\": \"AE10\",\n    \"area_estrategica\": \"Seguridad y salud en el trabajo\",\n    \"subarea\": \"SST\",\n    \"palabra_clave\": \"Seguridad y salud en el trabajo\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/seguridad-y-salud-en-el-trabajo\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q041\",\n    \"area_codigo\": \"AE11\",\n    \"area_estrategica\": \"Ambiente, sostenibilidad y cambio climático\",\n    \"subarea\": \"Ingeniería ambiental\",\n    \"palabra_clave\": \"Ingeniero ambiental\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-ingeniero-ambiental\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q042\",\n    \"area_codigo\": \"AE11\",\n    \"area_estrategica\": \"Ambiente, sostenibilidad y cambio climático\",\n    \"subarea\": \"Gestión ambiental\",\n    \"palabra_clave\": \"Gestión ambiental\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-profesional-administracion-gestion-ambiental\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q043\",\n    \"area_codigo\": \"AE11\",\n    \"area_estrategica\": \"Ambiente, sostenibilidad y cambio climático\",\n    \"subarea\": \"Sostenibilidad\",\n    \"palabra_clave\": \"Sostenibilidad y ESG\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-especialista-responsabilidad-ambiental-sostenibilidad\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q047\",\n    \"area_codigo\": \"AE12\",\n    \"area_estrategica\": \"Bioeconomía, agroindustria y desarrollo rural\",\n    \"subarea\": \"Agronomía y agronegocios\",\n    \"palabra_clave\": \"Agrónomo y agronegocios\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-agronomo\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q051\",\n    \"area_codigo\": \"AE13\",\n    \"area_estrategica\": \"Ciencias básicas e investigación\",\n    \"subarea\": \"Investigación científica\",\n    \"palabra_clave\": \"Científico\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-cientifico\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q052\",\n    \"area_codigo\": \"AE13\",\n    \"area_estrategica\": \"Ciencias básicas e investigación\",\n    \"subarea\": \"Dirección de investigación\",\n    \"palabra_clave\": \"Director de investigación\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-de-director-investigacion\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q055\",\n    \"area_codigo\": \"AE14\",\n    \"area_estrategica\": \"Desarrollo social y comunitario\",\n    \"subarea\": \"Trabajo social\",\n    \"palabra_clave\": \"Trabajador social\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/trabajador-social\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q059\",\n    \"area_codigo\": \"AE15\",\n    \"area_estrategica\": \"Comunicación, diseño e industrias creativas\",\n    \"subarea\": \"Comunicación\",\n    \"palabra_clave\": \"Comunicador social\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/comunicador-social\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q063\",\n    \"area_codigo\": \"AE16\",\n    \"area_estrategica\": \"Logística, transporte y cadena de suministro\",\n    \"subarea\": \"Logística\",\n    \"palabra_clave\": \"Logística\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/logistica\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q067\",\n    \"area_codigo\": \"AE17\",\n    \"area_estrategica\": \"Turismo, cultura y servicios\",\n    \"subarea\": \"Turismo\",\n    \"palabra_clave\": \"Turismo\",\n    \"prioridad\": \"Media\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/turismo\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"Q071\",\n    \"area_codigo\": \"AE18\",\n    \"area_estrategica\": \"Gestión de proyectos, calidad e innovación\",\n    \"subarea\": \"Proyectos\",\n    \"palabra_clave\": \"Gestión de proyectos\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/buscar/gestion-de-proyectos\",\n    \"alcance_geografico\": \"Nacional\",\n    \"paginas\": 2\n  },\n  {\n    \"id_consulta\": \"REG01\",\n    \"area_codigo\": \"REG\",\n    \"area_estrategica\": \"Mercado laboral regional\",\n    \"subarea\": \"Ibagué\",\n    \"palabra_clave\": \"Empleos en Ibagué\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-empleo-en-ibague\",\n    \"alcance_geografico\": \"Regional - Ibagué\",\n    \"paginas\": 3\n  },\n  {\n    \"id_consulta\": \"REG02\",\n    \"area_codigo\": \"REG\",\n    \"area_estrategica\": \"Mercado laboral regional\",\n    \"subarea\": \"Tolima\",\n    \"palabra_clave\": \"Empleos en Tolima\",\n    \"prioridad\": \"Alta\",\n    \"url_base\": \"https://www.magneto365.com/co/trabajos/ofertas-de-empleo-en-tolima\",\n    \"alcance_geografico\": \"Regional - Tolima\",\n    \"paginas\": 3\n  }\n];\n\nfunction construirUrlPagina(urlBase, pagina) {\n  if (pagina === 1) return urlBase;\n\n  // Magneto requiere la ruta /pagina-N y también el parámetro paginator[page].\n  const [rutaOriginal, consultaOriginal = \"\"] = urlBase.split(\"?\");\n  const rutaBase = rutaOriginal\n    .replace(/\\/pagina-\\d+\\/?$/i, \"\")\n    .replace(/\\/$/, \"\");\n  const parametros = consultaOriginal\n    ? `${consultaOriginal}&paginator%5Bpage%5D=${pagina}`\n    : `paginator%5Bpage%5D=${pagina}`;\n\n  return `${rutaBase}/pagina-${pagina}?${parametros}`;\n}\n\nconst consultas = [];\n\nfor (const item of catalogo) {\n  // Las rutas /buscar/ admiten paginación. Las rutas de catálogo y regionales\n  // devuelven HTTP 404 al solicitar /pagina-2, por lo que se consulta solo su página base.\n  const paginasEfectivas = item.url_base.includes(\"/buscar/\")\n    ? Math.min(item.paginas, 2)\n    : 1;\n\n  for (let pagina = 1; pagina <= paginasEfectivas; pagina++) {\n    consultas.push({\n      ...item,\n      pagina,\n      fuente_portal: \"Magneto\",\n      url: construirUrlPagina(item.url_base, pagina),\n      instruction: `Busca y extrae vacantes relacionadas con ${item.palabra_clave}. Alcance: ${item.alcance_geografico}. Consulta el detalle para identificar la modalidad laboral publicada.`,\n    });\n  }\n}\n\nreturn consultas.map(consulta => ({ json: consulta }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "90b184b7-72f9-483d-80c5-1c692bbdb359",
+      "name": "Generar consultas Magneto"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/files/Historico/vacantes_estrategicas_{{$now.toFormat('yyyy-MM-dd_HH-mm')}}.xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        3620,
+        -120
+      ],
+      "id": "a912ace6-38bb-4be3-9cde-d633fcf0213f",
+      "name": "Guardar histórico"
+    },
+    {
+      "parameters": {
+        "jsCode": "const entradas = $input.all();\nconst consultas = $(\"Generar consultas Magneto\").all();\nconst fechaEjecucion = new Date().toISOString();\nconst firmasPorConsulta = new Map();\n\nfunction normalizar(valor) {\n  return String(valor ?? \"\")\n    .toLowerCase()\n    .normalize(\"NFD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n}\n\nfunction obtenerTarjetas(contenido) {\n  const lineas = String(contenido || \"\")\n    .split(/\\r?\\n/)\n    .map(linea => linea.trim())\n    .filter(Boolean);\n  const tarjetas = [];\n  let dentroDeOfertas = false;\n\n  for (let i = 0; i < lineas.length; i++) {\n    const linea = lineas[i];\n    if (/^#\\s+(Ofertas de (empleo|trabajo)|Trabajos en)/i.test(linea)) {\n      dentroDeOfertas = true;\n      continue;\n    }\n    if (!dentroDeOfertas) continue;\n    if (/^-\\s*1$/.test(linea)) break;\n\n    if (linea.startsWith(\"## \") && !linea.startsWith(\"### \") && lineas[i + 1]?.startsWith(\"### \")) {\n      tarjetas.push(`${normalizar(linea)}|${normalizar(lineas[i + 1])}`);\n    }\n  }\n  return tarjetas;\n}\n\nfunction crearFirma(tarjetas) {\n  const texto = tarjetas.join(\"||\");\n  let hash = 2166136261;\n  for (let i = 0; i < texto.length; i++) {\n    hash ^= texto.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, \"0\");\n}\n\nreturn entradas.map((item, indice) => {\n  const entrada = item.json || {};\n  const consulta = consultas[indice]?.json || {};\n  const contenido = entrada.result?.content || \"\";\n  const tarjetas = obtenerTarjetas(contenido);\n  const detalles = entrada.result?.vacancy_details || [];\n  const modalidadesPublicadas = detalles.filter(detalle => detalle.estado_modalidad === \"Publicada\").length;\n  const detallesConError = detalles.filter(detalle => detalle.estado_modalidad === \"Error de consulta\").length;\n  const cupos = contenido.match(/([\\d.,]+)\\s+cupos/i)?.[1] || \"\";\n  const sinPaginaAdicional = entrada.status === \"no_additional_page\";\n  const fallida = !sinPaginaAdicional && !contenido;\n  const firma = tarjetas.length > 0 ? crearFirma(tarjetas) : \"\";\n  const firmasAnteriores = firmasPorConsulta.get(consulta.id_consulta) || new Set();\n  const paginaRepetida = consulta.pagina > 1 && firma !== \"\" && firmasAnteriores.has(firma);\n  if (firma) firmasAnteriores.add(firma);\n  firmasPorConsulta.set(consulta.id_consulta, firmasAnteriores);\n\n  let estado;\n  let validacionPaginacion;\n\n  if (sinPaginaAdicional) {\n    estado = \"Sin página adicional\";\n    validacionPaginacion = \"Sin página adicional\";\n  } else if (fallida) {\n    estado = \"Fallida\";\n    validacionPaginacion = \"Fallida\";\n  } else if (tarjetas.length === 0) {\n    estado = \"Exitosa sin vacantes\";\n    validacionPaginacion = consulta.pagina === 1 ? \"Página base sin vacantes\" : \"Sin vacantes\";\n  } else {\n    estado = \"Exitosa con vacantes\";\n    validacionPaginacion = consulta.pagina === 1\n      ? \"Página base\"\n      : paginaRepetida\n        ? \"Repetida\"\n        : \"Contenido diferente\";\n  }\n\n  return {\n    json: {\n      fecha_ejecucion: fechaEjecucion,\n      id_consulta: consulta.id_consulta || \"\",\n      area_codigo: consulta.area_codigo || \"\",\n      area_estrategica: consulta.area_estrategica || \"\",\n      subarea: consulta.subarea || \"\",\n      alcance_geografico: consulta.alcance_geografico || \"\",\n      pagina: consulta.pagina || 1,\n      url: consulta.url || \"\",\n      estado,\n      tarjetas_detectadas: tarjetas.length,\n      detalles_detectados: detalles.length,\n      modalidades_publicadas: modalidadesPublicadas,\n      detalles_con_error: detallesConError,\n      cupos_publicados: cupos,\n      firma_pagina: firma,\n      pagina_repetida: paginaRepetida,\n      validacion_paginacion: validacionPaginacion,\n      mensaje: entrada.message || entrada.error?.message || entrada.error || (fallida ? \"Sin respuesta del agente\" : \"Respuesta recibida\")\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        220
+      ],
+      "id": "cb7e8620-d21b-4cb2-90f5-69d1eb1545e1",
+      "name": "Control de consultas Magneto"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "control_consultas.xlsx",
+          "headerRow": true,
+          "sheetName": "Control"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        3360,
+        160
+      ],
+      "id": "f690b47c-e5e7-4ce6-a121-f3a6b752c884",
+      "name": "Convertir control a Excel"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/files/control_consultas.xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        3620,
+        160
+      ],
+      "id": "bff1a90a-9181-424d-9649-3753b3f79b61",
+      "name": "Guardar control de consultas"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3880,
+        20
+      ],
+      "id": "7255d11c-72dc-42f3-9e30-6b63d8fc6f30",
+      "name": "Esperar archivos base"
+    },
+    {
+      "parameters": {
+        "jsCode": "const vacancies = $(\"Consolidar vacantes multifuente\").all().map(item => item.json);\nconst executions = $(\"Consolidar control multifuente\").all().map(item => item.json);\n\nif (vacancies.length === 0) throw new Error(\"No hay vacantes para estructurar\");\nif (executions.length === 0) throw new Error(\"No hay registros de control para estructurar\");\n\nreturn [{ json: { vacancies, executions } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4140,
+        20
+      ],
+      "id": "502ca7a3-ea25-4913-b3bf-deaf5c060fd7",
+      "name": "Preparar modelo Power BI"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://agente:3000/powerbi-model",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        4400,
+        20
+      ],
+      "id": "6e7d5398-d794-42c0-8e10-78787658021c",
+      "name": "Generar modelo Power BI",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 15000,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const vacancies = $input.all().map(item => item.json);\nif (vacancies.length === 0) throw new Error(\"No hay vacantes para enriquecer\");\nreturn [{ json: { vacancies } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        -180
+      ],
+      "id": "45ba7f52-5729-4f7a-85d5-f97cdcfde9eb",
+      "name": "Preparar enriquecimiento"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://agente:3000/enrich-modalities",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {
+          "timeout": 1800000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1280,
+        -180
+      ],
+      "id": "e3ed03ec-18b1-4db4-89a5-700a7af3d65c",
+      "name": "Enriquecer modalidades",
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const vacancies = $json.vacancies;\nif (!Array.isArray(vacancies) || vacancies.length === 0) throw new Error(\"El servidor no devolvió vacantes enriquecidas\");\nreturn vacancies.map(vacancy => ({ json: vacancy }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -180
+      ],
+      "id": "57e7945b-ccc7-42f6-b6ad-6f2c9b4fc324",
+      "name": "Expandir vacantes Magneto"
+    },
+    {
+      "parameters": {
+        "jsCode": "const magneto = $(\"Generar consultas Magneto\").all().map(item => item.json);\nconst catalogo = new Map();\nfor (const consulta of magneto) {\n  if (!catalogo.has(consulta.id_consulta)) catalogo.set(consulta.id_consulta, consulta);\n}\n\nfunction slug(valor) {\n  return String(valor || \"\")\n    .toLowerCase()\n    .normalize(\"NFD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .replace(/[^a-z0-9]+/g, \"-\")\n    .replace(/^-+|-+$/g, \"\");\n}\n\nconst rutasEspeciales = {\n  REG01: \"ibague\",\n  REG02: \"trabajo-tolima\",\n  Q043: \"trabajo-sostenibilidad\",\n  Q047: \"trabajo-agronomo\",\n  Q051: \"trabajo-cientifico\",\n  Q052: \"trabajo-director-de-investigacion\"\n};\n\nconst consultas = [...catalogo.values()].map(base => {\n  const ruta = rutasEspeciales[base.id_consulta] || \"trabajo-\" + slug(base.palabra_clave);\n  return {\n    id_consulta: \"EE-\" + base.id_consulta,\n    area_codigo: base.area_codigo,\n    area_estrategica: base.area_estrategica,\n    subarea: base.subarea,\n    palabra_clave: base.palabra_clave,\n    prioridad: base.prioridad,\n    alcance_geografico: base.alcance_geografico,\n    pagina: 1,\n    fuente_portal: \"elempleo.com\",\n    url: \"https://www.elempleo.com/co/ofertas-empleo/\" + ruta\n  };\n});\n\nreturn consultas.map(consulta => ({ json: consulta }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2060,
+        -180
+      ],
+      "id": "ee0b2961-4d89-437d-b3d8-0efe9cff51c1",
+      "name": "Generar consultas elempleo"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://agente:3000/scrape-elempleo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"id_consulta\": \"{{$json.id_consulta}}\",\n  \"area_codigo\": \"{{$json.area_codigo}}\",\n  \"area_estrategica\": \"{{$json.area_estrategica}}\",\n  \"palabra_clave\": \"{{$json.palabra_clave}}\",\n  \"url\": \"{{$json.url}}\"\n}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 3500
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2320,
+        -180
+      ],
+      "id": "639fac0e-4b7b-4317-9891-102204c463bf",
+      "name": "Consultar elempleo",
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const respuestas = $input.all().map(item => item.json);\nconst consultas = $(\"Generar consultas elempleo\").all().map(item => item.json);\nconst unicas = new Map();\n\nfunction texto(valor) { return String(valor ?? \"\").trim(); }\nfunction normalizar(valor) {\n  return texto(valor).toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").replace(/\\s+/g, \" \").trim();\n}\nfunction combinar(actual, nuevo) {\n  const valores = new Set(texto(actual).split(\" | \").filter(Boolean));\n  if (texto(nuevo)) valores.add(texto(nuevo));\n  return [...valores].join(\" | \");\n}\nfunction nivel(cargo, descripcion, contrato) {\n  const titulo = normalizar(cargo + \" \" + contrato);\n  if (/practic|aprendiz/.test(titulo)) return \"Práctica o aprendizaje\";\n  if (/director|gerente|vicepresidente|decano|rector/.test(titulo)) return \"Directivo\";\n  if (/coordinador|jefe|lider|especialista|consultor senior/.test(titulo)) return \"Coordinación o especialista\";\n  if (/auxiliar|operario|operador|bodeguero|oficios varios|conductor|mensajero/.test(titulo)) return \"Auxiliar u operativo\";\n  if (/tecnico|tecnologo/.test(titulo)) return \"Técnico o tecnólogo\";\n  if (/profesional|ingenier|analista|docente|abogad|psicolog|administrador|contador|medic|enfermer|desarrollador/.test(titulo)) return \"Profesional\";\n\n  const detalle = normalizar(descripcion);\n  const niveles = [\n    /bachiller/.test(detalle),\n    /tecnico|tecnologo/.test(detalle),\n    /profesional|pregrado|universitari/.test(detalle)\n  ].filter(Boolean).length;\n  if (niveles >= 2) return \"Múltiples niveles aceptados\";\n  if (/profesional|pregrado|universitari/.test(detalle)) return \"Profesional\";\n  if (/tecnico|tecnologo/.test(detalle)) return \"Técnico o tecnólogo\";\n  if (/bachiller|operari|auxiliar/.test(detalle)) return \"Auxiliar u operativo\";\n  return \"No determinado\";\n}\nfunction estadoSalario(vacante) {\n  if (vacante.salario_minimo !== null && vacante.salario_minimo !== undefined) return \"Publicado\";\n  if (/confidencial/i.test(texto(vacante.salario))) return \"Confidencial\";\n  if (/convenir/i.test(texto(vacante.salario))) return \"A convenir\";\n  if (/no informado/i.test(texto(vacante.salario))) return \"No informado\";\n  return \"No interpretable\";\n}\nfunction modalidad(valor) {\n  const dato = normalizar(valor);\n  if (/hibrid|mixt/.test(dato)) return \"Híbrida\";\n  if (/remot|virtual|teletrabajo/.test(dato)) return \"Remota\";\n  if (/presencial/.test(dato)) return \"Presencial\";\n  return \"No informada\";\n}\nfunction clasificarArea(cargo, descripcion) {\n  const principal = normalizar(cargo);\n  const apoyo = normalizar(descripcion).slice(0, 1800);\n  const valor = principal + \" \" + apoyo;\n  const reglas = [\n    [\"AE10\", \"Seguridad y salud en el trabajo\", /\\bsst\\b|seguridad y salud|salud ocupacional/],\n    [\"AE03\", \"Inteligencia artificial, datos y ciberseguridad\", /inteligencia artificial|analista de datos|cientifico de datos|ciberseguridad|business intelligence|analitica de datos/],\n    [\"AE02\", \"Tecnologías digitales y software\", /software|desarrollador|programador|sistemas|devops|cloud|soporte ti|telecomunicaciones/],\n    [\"AE11\", \"Ambiente, sostenibilidad y cambio climático\", /ambiental|sostenibilidad|forestal|cambio climatico/],\n    [\"AE12\", \"Bioeconomía, agroindustria y desarrollo rural\", /agronom|agroindustr|agricol|pecuario|rural/],\n    [\"AE13\", \"Ciencias básicas e investigación\", /investigacion|cientific|laboratorio|biolog|quimic|fisic/],\n    [\"AE01\", \"Educación y pedagogía\", /docente|profesor|educacion|pedagog|academico/],\n    [\"AE05\", \"Infraestructura, construcción y territorio\", /ingenieria civil|ingeniero civil|arquitect|construccion|obra/],\n    [\"AE16\", \"Logística, transporte y cadena de suministro\", /logistic|transporte|cadena de suministro|almacen|bodega/],\n    [\"AE04\", \"Ingeniería, automatización e industria\", /ingenier|automatizacion|produccion|mantenimiento|manufactura/],\n    [\"AE09\", \"Salud, psicología y bienestar\", /medic|enfermer|psicolog|salud|nutricion|fisioterap/],\n    [\"AE08\", \"Derecho, gobierno y políticas públicas\", /abogad|juridic|derecho|gobierno|politica publica/],\n    [\"AE14\", \"Desarrollo social y comunitario\", /trabajo social|comunitari|desarrollo social/],\n    [\"AE15\", \"Comunicación, diseño e industrias creativas\", /comunicador|comunicacion|disen|audiovisual|publicista|creativ/],\n    [\"AE17\", \"Turismo, cultura y servicios\", /turismo|hotel|gastronom|cultura|viajes/],\n    [\"AE18\", \"Gestión de proyectos, calidad e innovación\", /proyecto|calidad|innovacion|mejora continua/],\n    [\"AE06\", \"Administración, finanzas y economía\", /administr|financier|contab|econom|tesorer|auditor/],\n    [\"AE07\", \"Mercadeo, ventas y emprendimiento\", /mercadeo|marketing|comercial|ventas|emprendimiento/]\n  ];\n  for (const [codigo, area, patron] of reglas) if (patron.test(valor)) return { codigo, area };\n  return { codigo: \"OTR\", area: \"Otros perfiles regionales\" };\n}\n\nfor (let i = 0; i < respuestas.length; i++) {\n  const respuesta = respuestas[i];\n  const consulta = respuesta.query || consultas[i] || {};\n  for (const original of (respuesta.vacancies || [])) {\n    const regional = consulta.area_codigo === \"REG\";\n    const clasificacion = regional\n      ? clasificarArea(original.cargo, original.descripcion)\n      : { codigo: consulta.area_codigo || original.area_codigo, area: consulta.area_estrategica || original.area_estrategica };\n    const vacante = {\n      ...original,\n      id_consulta: consulta.id_consulta || original.id_consulta || \"\",\n      area_codigo: clasificacion.codigo,\n      area_estrategica: clasificacion.area,\n      area_origen: consulta.area_estrategica || \"\",\n      subarea: consulta.subarea || \"\",\n      palabra_clave: consulta.palabra_clave || \"\",\n      prioridad: consulta.prioridad || \"\",\n      alcance_geografico: consulta.alcance_geografico || \"Nacional\",\n      pagina_origen: \"1\",\n      url_fuente: consulta.url || \"\",\n      fuente_portal: \"elempleo.com\",\n      nivel_ocupacional: nivel(original.cargo, original.descripcion, original.contrato),\n      estado_salario: estadoSalario(original),\n      modalidad_trabajo: modalidad(original.modalidad_trabajo),\n      urgente: false\n    };\n    const clave = texto(vacante.fuente_registro_id) || texto(vacante.url_vacante) || [normalizar(vacante.cargo), normalizar(vacante.empresa), normalizar(vacante.ubicacion)].join(\"|\");\n    if (unicas.has(clave)) {\n      const existente = unicas.get(clave);\n      for (const campo of [\"id_consulta\", \"area_codigo\", \"area_estrategica\", \"area_origen\", \"subarea\", \"palabra_clave\", \"prioridad\", \"alcance_geografico\", \"pagina_origen\", \"url_fuente\"]) {\n        existente[campo] = combinar(existente[campo], vacante[campo]);\n      }\n    } else {\n      unicas.set(clave, vacante);\n    }\n  }\n}\n\nreturn [...unicas.values()].map(vacante => ({ json: vacante }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        -300
+      ],
+      "id": "6b44d481-03a0-4982-9928-baf54b96ce71",
+      "name": "Procesar vacantes elempleo"
+    },
+    {
+      "parameters": {
+        "jsCode": "const respuestas = $input.all().map(item => item.json);\nconst consultas = $(\"Generar consultas elempleo\").all().map(item => item.json);\n\nfunction firma(vacantes) {\n  const texto = (vacantes || []).map(v => v.fuente_registro_id || v.url_vacante || v.cargo).join(\"|\");\n  let hash = 2166136261;\n  for (let i = 0; i < texto.length; i++) { hash ^= texto.charCodeAt(i); hash = Math.imul(hash, 16777619); }\n  return texto ? (hash >>> 0).toString(16).padStart(8, \"0\") : \"\";\n}\n\nreturn respuestas.map((respuesta, indice) => {\n  const consulta = respuesta.query || consultas[indice] || {};\n  const vacantes = Array.isArray(respuesta.vacancies) ? respuesta.vacancies : [];\n  const exitosa = respuesta.status === \"ok\" || respuesta.status === \"empty\";\n  const estado = !exitosa ? \"Fallida\" : (vacantes.length > 0 ? \"Exitosa con vacantes\" : \"Exitosa sin vacantes\");\n  return { json: {\n    fecha_ejecucion: new Date().toISOString(),\n    id_consulta: consulta.id_consulta || \"\",\n    area_codigo: consulta.area_codigo || \"\",\n    area_estrategica: consulta.area_estrategica || \"\",\n    subarea: consulta.subarea || \"\",\n    alcance_geografico: consulta.alcance_geografico || \"\",\n    pagina: 1,\n    url: consulta.url || \"\",\n    estado,\n    tarjetas_detectadas: vacantes.length,\n    detalles_detectados: vacantes.length,\n    modalidades_publicadas: vacantes.filter(v => v.estado_modalidad === \"Publicada\").length,\n    detalles_con_error: 0,\n    cupos_publicados: \"\",\n    firma_pagina: firma(vacantes),\n    pagina_repetida: false,\n    validacion_paginacion: \"Página base\",\n    mensaje: respuesta.message || respuesta.error?.message || respuesta.error || \"Sin respuesta\",\n    fuente_portal: \"elempleo.com\"\n  }};\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        120
+      ],
+      "id": "62070575-fb91-461f-ac26-ca3b0bb4c59d",
+      "name": "Control de consultas elempleo"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2840,
+        -80
+      ],
+      "id": "d7089d5c-07b3-4f62-8293-1d8d83a24fb8",
+      "name": "Esperar ramas elempleo"
+    },
+    {
+      "parameters": {
+        "jsCode": "const magneto = $(\"Expandir vacantes Magneto\").all().map(item => item.json);\nconst elempleo = $(\"Procesar vacantes elempleo\").all().map(item => item.json);\nconst controlMagneto = $(\"Control de consultas Magneto\").all().map(item => item.json);\nconst controlElempleo = $(\"Control de consultas elempleo\").all().map(item => item.json);\nconst fallidas = [...controlMagneto, ...controlElempleo].filter(item => /^(fallida|error|blocked|error_n8n)$/i.test(String(item.estado || \"\").trim()));\nif (fallidas.length > 0) {\n  const detalle = fallidas.map(item => String(item.id_consulta || \"sin ID\")).join(\", \");\n  throw new Error(\"La ejecución contiene \" + fallidas.length + \" consultas fallidas (\" + detalle + \"). El archivo maestro oficial no fue reemplazado.\");\n}\nconst unicas = new Map();\n\nconst municipiosTolima = [\"Ibague\",\"Alpujarra\",\"Alvarado\",\"Ambalema\",\"Anzoategui\",\"Armero Guayabal\",\"Ataco\",\"Cajamarca\",\"Carmen de Apicala\",\"Casabianca\",\"Chaparral\",\"Coello\",\"Coyaima\",\"Cunday\",\"Dolores\",\"Espinal\",\"Falan\",\"Flandes\",\"Fresno\",\"Guamo\",\"Herveo\",\"Honda\",\"Icononzo\",\"Lerida\",\"Libano\",\"San Sebastian de Mariquita\",\"Mariquita\",\"Melgar\",\"Murillo\",\"Natagaima\",\"Ortega\",\"Palocabildo\",\"Piedras\",\"Planadas\",\"Prado\",\"Purificacion\",\"Rioblanco\",\"Roncesvalles\",\"Rovira\",\"Saldana\",\"San Antonio\",\"San Luis\",\"Santa Isabel\",\"Suarez\",\"Valle de San Juan\",\"Venadillo\",\"Villahermosa\",\"Villarrica\"];\n\nfunction texto(valor) { return String(valor ?? \"\").trim(); }\nfunction normalizar(valor) { return texto(valor).toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").replace(/[^a-z0-9]+/g, \" \").trim(); }\nfunction combinar(actual, nuevo) {\n  const valores = new Set(texto(actual).split(\" | \").filter(Boolean));\n  if (texto(nuevo)) valores.add(texto(nuevo));\n  return [...valores].join(\" | \");\n}\nfunction fuente(valor) { return /elempleo/i.test(texto(valor)) ? \"elempleo.com\" : \"Magneto\"; }\nfunction modalidad(valor) {\n  const dato = normalizar(valor);\n  if (/hibrid|mixt/.test(dato)) return \"Híbrida\";\n  if (/remot|virtual|teletrabajo/.test(dato)) return \"Remota\";\n  if (/presencial/.test(dato)) return \"Presencial\";\n  if (/no disponible/.test(dato)) return \"No disponible\";\n  return \"No informada\";\n}\nfunction ubicar(original) {\n  const ubicacion = original.ubicacion;\n  const dato = normalizar(ubicacion);\n  const coincidencias = municipiosTolima.filter(m => dato.includes(normalizar(m))).sort((a,b) => b.length-a.length);\n  const municipio = coincidencias[0] || \"\";\n  const regional = Boolean(municipio || dato.includes(\"tolima\") || Number(original.es_ibague_tolima) === 1);\n  return {\n    departamento: regional ? \"Tolima\" : (texto(original.departamento) || \"No informado\"),\n    municipio: municipio || texto(original.municipio) || (/remot/.test(dato) ? \"No informado\" : texto(ubicacion) || \"No informado\"),\n    regional: regional ? 1 : 0\n  };\n}\nfunction estadoSalario(v) {\n  if (v.salario_minimo !== null && v.salario_minimo !== undefined && v.salario_maximo !== null && v.salario_maximo !== undefined) return \"Publicado\";\n  const dato = normalizar(v.salario);\n  if (dato.includes(\"confidencial\")) return \"Confidencial\";\n  if (dato.includes(\"convenir\")) return \"A convenir\";\n  if (!dato || dato.includes(\"no informado\")) return \"No informado\";\n  return \"No interpretable\";\n}\n\nfor (const original of [...magneto, ...elempleo]) {\n  const portal = fuente(original.fuente_portal);\n  const geo = ubicar(original);\n  const vacante = {\n    ...original,\n    fuente_portal: portal,\n    modalidad_trabajo: modalidad(original.modalidad_trabajo),\n    estado_salario: estadoSalario(original),\n    departamento: geo.departamento,\n    municipio: geo.municipio,\n    es_ibague_tolima: geo.regional\n  };\n  const identificador = texto(vacante.fuente_registro_id) || texto(vacante.url_vacante);\n  const natural = [normalizar(vacante.cargo), normalizar(vacante.empresa), normalizar(vacante.ubicacion)].join(\"|\");\n  const clave = portal + \"|\" + (identificador || natural);\n  if (unicas.has(clave)) {\n    const existente = unicas.get(clave);\n    for (const campo of [\"id_consulta\", \"area_codigo\", \"area_estrategica\", \"area_origen\", \"subarea\", \"palabra_clave\", \"prioridad\", \"alcance_geografico\", \"pagina_origen\", \"url_fuente\"]) {\n      existente[campo] = combinar(existente[campo], vacante[campo]);\n    }\n  } else {\n    unicas.set(clave, vacante);\n  }\n}\n\nconst resultado = [...unicas.values()];\nif (resultado.length === 0) throw new Error(\"No hay vacantes para consolidar\");\nreturn resultado.map(vacante => ({ json: vacante }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        -220
+      ],
+      "id": "fb86ae05-2449-4d21-bc08-df6dad545093",
+      "name": "Consolidar vacantes multifuente"
+    },
+    {
+      "parameters": {
+        "jsCode": "const magneto = $(\"Control de consultas Magneto\").all().map(item => ({ ...item.json, fuente_portal: \"Magneto\" }));\nconst elempleo = $(\"Control de consultas elempleo\").all().map(item => item.json);\nconst control = [...magneto, ...elempleo];\nif (control.length === 0) throw new Error(\"No hay registros de control para consolidar\");\nreturn control.map(registro => ({ json: registro }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        160
+      ],
+      "id": "5eeb6b8c-a2a0-4deb-aa8b-c9f5abcbe381",
+      "name": "Consolidar control multifuente"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1800,
+        -80
+      ],
+      "id": "a805277e-5232-4068-abbb-025d78bb26c5",
+      "name": "Esperar ramas Magneto",
+      "notesInFlow": true,
+      "notes": "Sincroniza las vacantes enriquecidas y el control de Magneto antes de iniciar elempleo.com."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Generar consultas Magneto": {
+      "main": [
+        [
+          {
+            "node": "Consultar Magneto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar Magneto": {
+      "main": [
+        [
+          {
+            "node": "Procesar vacantes Magneto",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Control de consultas Magneto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesar vacantes Magneto": {
+      "main": [
+        [
+          {
+            "node": "Preparar enriquecimiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar enriquecimiento": {
+      "main": [
+        [
+          {
+            "node": "Enriquecer modalidades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enriquecer modalidades": {
+      "main": [
+        [
+          {
+            "node": "Expandir vacantes Magneto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expandir vacantes Magneto": {
+      "main": [
+        [
+          {
+            "node": "Esperar ramas Magneto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar consultas elempleo": {
+      "main": [
+        [
+          {
+            "node": "Consultar elempleo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar elempleo": {
+      "main": [
+        [
+          {
+            "node": "Procesar vacantes elempleo",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Control de consultas elempleo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesar vacantes elempleo": {
+      "main": [
+        [
+          {
+            "node": "Esperar ramas elempleo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Control de consultas elempleo": {
+      "main": [
+        [
+          {
+            "node": "Esperar ramas elempleo",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Esperar ramas elempleo": {
+      "main": [
+        [
+          {
+            "node": "Consolidar vacantes multifuente",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Consolidar control multifuente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidar vacantes multifuente": {
+      "main": [
+        [
+          {
+            "node": "Convertir vacantes a Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convertir vacantes a Excel": {
+      "main": [
+        [
+          {
+            "node": "Guardar Excel maestro",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Guardar histórico",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidar control multifuente": {
+      "main": [
+        [
+          {
+            "node": "Convertir control a Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convertir control a Excel": {
+      "main": [
+        [
+          {
+            "node": "Guardar control de consultas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar histórico": {
+      "main": [
+        [
+          {
+            "node": "Esperar archivos base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar control de consultas": {
+      "main": [
+        [
+          {
+            "node": "Esperar archivos base",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Esperar archivos base": {
+      "main": [
+        [
+          {
+            "node": "Preparar modelo Power BI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar modelo Power BI": {
+      "main": [
+        [
+          {
+            "node": "Generar modelo Power BI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar V9.2 multifuente": {
+      "main": [
+        [
+          {
+            "node": "Generar consultas Magneto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Control de consultas Magneto": {
+      "main": [
+        [
+          {
+            "node": "Esperar ramas Magneto",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Esperar ramas Magneto": {
+      "main": [
+        [
+          {
+            "node": "Generar consultas elempleo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": [],
+  "versionId": "9ad3b80e-733a-4b1d-a8eb-0d4b2e3fbafa"
+}
