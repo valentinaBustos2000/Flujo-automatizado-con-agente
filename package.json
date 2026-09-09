@@ -1,0 +1,15 @@
+{
+  "name": "agente-scraping",
+  "version": "6.1.0",
+  "private": true,
+  "description": "Scraping estable, enriquecimiento de modalidad y modelo automático para Power BI",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "exceljs": "4.4.0",
+    "express": "5.2.1"
+  }
+}

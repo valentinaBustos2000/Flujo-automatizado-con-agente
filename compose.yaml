@@ -1,0 +1,43 @@
+services:
+  agente:
+    build:
+      context: ./agente
+    container_name: agente-scraping-unibague
+    restart: unless-stopped
+    expose:
+      - "3000"
+    shm_size: "2gb"
+    volumes:
+      - "C:/Users/Unibague/OneDrive - unibague.edu.co/Agente_Scraping:/files"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  n8n:
+    image: n8nio/n8n:2.36.8
+    container_name: n8n-unibague
+    restart: unless-stopped
+    depends_on:
+      agente:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      TZ: America/Bogota
+      GENERIC_TIMEZONE: America/Bogota
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: /files
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - "C:/Users/Unibague/OneDrive - unibague.edu.co/Agente_Scraping:/files"
+
+volumes:
+  n8n_data:
+    name: n8n_unibague_data
